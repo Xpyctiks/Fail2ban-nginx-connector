@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
 
-"""Fail2ban -> nginx connector.
-
-Usage:
-  fail2ban-nginx-connector.py ban <ip> [name]
-  fail2ban-nginx-connector.py unban <ip> [name]
-  fail2ban-nginx-connector.py reload
-
-ban/unban only edit the ban config and create a reload marker file.
-reload checks for the marker and, if present, tests and reloads nginx,
-then removes the marker (intended to be run periodically, e.g. from cron/systemd timer).
-
-Settings are read from .env next to this script (path can be overridden
-with the FAIL2BAN_CONNECTOR_ENV environment variable).
-"""
-
 import argparse
 import fcntl
 import json
@@ -50,14 +35,14 @@ except FileNotFoundError:
   sys.exit(f"Config file not found: {ENV_FILE}")
 
 try:
-  BAN_FILE = _env["BAN_FILE"]
-  LOG_FILE = _env["LOG_FILE"]
-  RELOAD_MARKER = _env["RELOAD_MARKER"]
-  LOCK_FILE = _env["LOCK_FILE"]
-  TELEGRAM_TOKEN = _env["TELEGRAM_TOKEN"]
-  TELEGRAM_CHAT_ID = _env["TELEGRAM_CHAT_ID"]
-  SERVER_NAME = _env["SERVER_NAME"]
-  NGINX_RELOAD_REPORT = _env["NGINX_RELOAD_REPORT"]
+  BAN_FILE = _env.get(["BAN_FILE"],"")
+  LOG_FILE = _env.get(["LOG_FILE"],"fail2ban-connector.log")
+  RELOAD_MARKER = _env.get(["RELOAD_MARKER"],"/run/fail2ban-nginx-connector.reload")
+  LOCK_FILE = _env.get(["LOCK_FILE"],"/run/fail2ban-nginx-connector.lock")
+  TELEGRAM_TOKEN = _env.get(["TELEGRAM_TOKEN"],"")
+  TELEGRAM_CHAT_ID = _env.get(["TELEGRAM_CHAT_ID"],"")
+  SERVER_NAME = _env.get(["SERVER_NAME"],"")
+  NGINX_RELOAD_REPORT = int(_env.get(["NGINX_RELOAD_REPORT"],"0"))
 except KeyError as e:
   sys.exit(f"Missing variable {e} in {ENV_FILE}")
 
@@ -68,7 +53,7 @@ def log(message):
 
 def telegram(message, title):
   url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-  payload = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": f"{title} {SERVER_NAME}\n{message}"}).encode()
+  payload = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": f"{title} ({SERVER_NAME})\n{message}"}).encode()
   request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
   try:
     with urllib.request.urlopen(request, timeout=10):
@@ -131,21 +116,25 @@ def unban(ip, name):
   log(f"{name} Removed {ip} from {BAN_FILE}, reload scheduled")
   telegram(f"{name} IP {ip} was unbanned", "🏃Fail2ban-Nginx")
 
+def run_nginx(args):
+  try:
+    return subprocess.run(["nginx", *args], capture_output=True, text=True, timeout=30)
+  except (subprocess.TimeoutExpired, OSError) as e:
+    return subprocess.CompletedProcess(args, 1, "", str(e))
+
 def reload_nginx():
   """Reload nginx if the reload marker exists, then remove the marker."""
   with lock():
     if not os.path.exists(RELOAD_MARKER):
       return 0
-    # Remove the marker before reloading so a ban arriving after the
-    # reload re-creates it instead of being lost.
     os.remove(RELOAD_MARKER)
-    test = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
+    test = run_nginx(["-t"])
     if test.returncode != 0:
       create_reload_marker()
       log(f"ERROR: nginx test failed: {test.stderr.strip()}")
       telegram("Reload skipped - nginx test failed", "🏮Fail2ban-Nginx")
       return 1
-    result = subprocess.run(["nginx", "-s", "reload"], capture_output=True, text=True)
+    result = run_nginx(["-s", "reload"])
     if result.returncode != 0:
       create_reload_marker()
       log(f"ERROR: nginx reload failed: {result.stderr.strip()}")
@@ -165,7 +154,6 @@ def main():
     p.add_argument("name", nargs="?", default="unknown")
   sub.add_parser("reload", help="reload nginx if a reload marker exists")
   args = parser.parse_args()
-
   if args.action == "ban":
     ban(args.ip, args.name or "unknown")
   elif args.action == "unban":
