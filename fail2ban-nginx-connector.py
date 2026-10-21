@@ -57,6 +57,7 @@ try:
   TELEGRAM_TOKEN = _env["TELEGRAM_TOKEN"]
   TELEGRAM_CHAT_ID = _env["TELEGRAM_CHAT_ID"]
   SERVER_NAME = _env["SERVER_NAME"]
+  NGINX_RELOAD_REPORT = _env["NGINX_RELOAD_REPORT"]
 except KeyError as e:
   sys.exit(f"Missing variable {e} in {ENV_FILE}")
 
@@ -151,6 +152,8 @@ def reload_nginx():
       telegram("Nginx reload failed", "🏮Fail2ban-Nginx")
       return 1
   log("Nginx reloaded")
+  if NGINX_RELOAD_REPORT == 1:
+    telegram("Nginx reloaded", "♻Fail2ban-Nginx")
   return 0
 
 def main():
