@@ -56,6 +56,7 @@ try:
   LOCK_FILE = _env["LOCK_FILE"]
   TELEGRAM_TOKEN = _env["TELEGRAM_TOKEN"]
   TELEGRAM_CHAT_ID = _env["TELEGRAM_CHAT_ID"]
+  SERVER_NAME = _env["SERVER_NAME"]
 except KeyError as e:
   sys.exit(f"Missing variable {e} in {ENV_FILE}")
 
@@ -66,7 +67,7 @@ def log(message):
 
 def telegram(message, title):
   url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-  payload = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": f"{title}\n{message}"}).encode()
+  payload = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": f"{title} {SERVER_NAME}\n{message}"}).encode()
   request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
   try:
     with urllib.request.urlopen(request, timeout=10):
