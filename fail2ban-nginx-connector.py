@@ -35,14 +35,16 @@ except FileNotFoundError:
   sys.exit(f"Config file not found: {ENV_FILE}")
 
 try:
-  BAN_FILE = _env.get(["BAN_FILE"],"")
-  LOG_FILE = _env.get(["LOG_FILE"],"fail2ban-connector.log")
-  RELOAD_MARKER = _env.get(["RELOAD_MARKER"],"/run/fail2ban-nginx-connector.reload")
-  LOCK_FILE = _env.get(["LOCK_FILE"],"/run/fail2ban-nginx-connector.lock")
-  TELEGRAM_TOKEN = _env.get(["TELEGRAM_TOKEN"],"")
-  TELEGRAM_CHAT_ID = _env.get(["TELEGRAM_CHAT_ID"],"")
-  SERVER_NAME = _env.get(["SERVER_NAME"],"")
-  NGINX_RELOAD_REPORT = int(_env.get(["NGINX_RELOAD_REPORT"],"0"))
+  BAN_FILE = _env.get("BAN_FILE","")
+  LOG_FILE = _env.get("LOG_FILE","fail2ban-connector.log")
+  RELOAD_MARKER = _env.get("RELOAD_MARKER","/run/fail2ban-nginx-connector.reload")
+  LOCK_FILE = _env.get("LOCK_FILE","/run/fail2ban-nginx-connector.lock")
+  TELEGRAM_TOKEN = _env.get("TELEGRAM_TOKEN","")
+  TELEGRAM_CHAT_ID = _env.get("TELEGRAM_CHAT_ID","")
+  SERVER_NAME = _env.get("SERVER_NAME","")
+  NGINX_RELOAD_REPORT = int(_env.get("NGINX_RELOAD_REPORT","0"))
+  if not BAN_FILE:
+    sys.exit(f"Variable BAN_FILE is not set!")
 except KeyError as e:
   sys.exit(f"Missing variable {e} in {ENV_FILE}")
 
@@ -52,6 +54,8 @@ def log(message):
     f.write(f"{timestamp} {message}\n")
 
 def telegram(message, title):
+  if not TELEGRAM_CHAT_ID or not TELEGRAM_TOKEN:
+    return
   url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
   payload = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": f"{title} ({SERVER_NAME})\n{message}"}).encode()
   request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
