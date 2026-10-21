@@ -43,6 +43,7 @@ try:
   TELEGRAM_CHAT_ID = _env.get("TELEGRAM_CHAT_ID","")
   SERVER_NAME = _env.get("SERVER_NAME","")
   NGINX_RELOAD_REPORT = int(_env.get("NGINX_RELOAD_REPORT","0"))
+  NGINX_BIN = _env.get("NGINX_BIN","/usr/sbin/nginx")
   if not BAN_FILE:
     sys.exit(f"Variable BAN_FILE is not set!")
 except KeyError as e:
@@ -122,7 +123,7 @@ def unban(ip, name):
 
 def run_nginx(args):
   try:
-    return subprocess.run(["nginx", *args], capture_output=True, text=True, timeout=30)
+    return subprocess.run([NGINX_BIN, *args], capture_output=True, text=True, timeout=30)
   except (subprocess.TimeoutExpired, OSError) as e:
     return subprocess.CompletedProcess(args, 1, "", str(e))
 
@@ -136,13 +137,13 @@ def reload_nginx():
     if test.returncode != 0:
       create_reload_marker()
       log(f"ERROR: nginx test failed: {test.stderr.strip()}")
-      telegram("Reload skipped - nginx test failed", "🚨Fail2ban-Nginx")
+      telegram(f"Reload skipped - nginx test failed:\n{test.stderr.strip()[-500:]}", "🚨Fail2ban-Nginx")
       return 1
     result = run_nginx(["-s", "reload"])
     if result.returncode != 0:
       create_reload_marker()
       log(f"ERROR: nginx reload failed: {result.stderr.strip()}")
-      telegram("Nginx reload failed", "🚨Fail2ban-Nginx")
+      telegram(f"Nginx reload failed:\n{result.stderr.strip()[-500:]}", "🚨Fail2ban-Nginx")
       return 1
   log("Nginx reloaded")
   if NGINX_RELOAD_REPORT == 1:
@@ -158,6 +159,7 @@ def show_current_config():
   print(f"TELEGRAM_CHAT_ID = {TELEGRAM_CHAT_ID}")
   print(f"SERVER_NAME = {SERVER_NAME}")
   print(f"NGINX_RELOAD_REPORT = {NGINX_RELOAD_REPORT}")
+  print(f"NGINX_BIN = {NGINX_BIN}")
 
 def main():
   parser = argparse.ArgumentParser(description="Fail2ban -> nginx ban list connector")
@@ -176,7 +178,7 @@ def main():
   elif args.action == "reload":
     return reload_nginx()
   elif args.action == "show":
-      return show_current_config()
+    return show_current_config()
   return 0
 
 if __name__ == "__main__":
