@@ -149,6 +149,16 @@ def reload_nginx():
     telegram("Nginx reloaded", "♻Fail2ban-Nginx")
   return 0
 
+def show_current_config():
+  print(f"BAN_FILE = {BAN_FILE}")
+  print(f"LOG_FILE = {LOG_FILE}")
+  print(f"RELOAD_MARKER = {RELOAD_MARKER}")
+  print(f"LOCK_FILE = {LOCK_FILE}")
+  print(f"TELEGRAM_TOKEN = {TELEGRAM_TOKEN}")
+  print(f"TELEGRAM_CHAT_ID = {TELEGRAM_CHAT_ID}")
+  print(f"SERVER_NAME = {SERVER_NAME}")
+  print(f"NGINX_RELOAD_REPORT = {NGINX_RELOAD_REPORT}")
+
 def main():
   parser = argparse.ArgumentParser(description="Fail2ban -> nginx ban list connector")
   sub = parser.add_subparsers(dest="action", required=True)
@@ -157,6 +167,7 @@ def main():
     p.add_argument("ip")
     p.add_argument("name", nargs="?", default="unknown")
   sub.add_parser("reload", help="reload nginx if a reload marker exists")
+  sub.add_parser("show", help="shows current config variables")
   args = parser.parse_args()
   if args.action == "ban":
     ban(args.ip, args.name or "unknown")
@@ -164,6 +175,8 @@ def main():
     unban(args.ip, args.name or "unknown")
   elif args.action == "reload":
     return reload_nginx()
+  elif args.action == "show":
+      return show_current_config()
   return 0
 
 if __name__ == "__main__":
