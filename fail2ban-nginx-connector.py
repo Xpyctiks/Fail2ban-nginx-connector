@@ -136,13 +136,13 @@ def reload_nginx():
     if test.returncode != 0:
       create_reload_marker()
       log(f"ERROR: nginx test failed: {test.stderr.strip()}")
-      telegram("Reload skipped - nginx test failed", "🏮Fail2ban-Nginx")
+      telegram("Reload skipped - nginx test failed", "🚨Fail2ban-Nginx")
       return 1
     result = run_nginx(["-s", "reload"])
     if result.returncode != 0:
       create_reload_marker()
       log(f"ERROR: nginx reload failed: {result.stderr.strip()}")
-      telegram("Nginx reload failed", "🏮Fail2ban-Nginx")
+      telegram("Nginx reload failed", "🚨Fail2ban-Nginx")
       return 1
   log("Nginx reloaded")
   if NGINX_RELOAD_REPORT == 1:
