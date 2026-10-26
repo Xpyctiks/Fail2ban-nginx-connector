@@ -3,3 +3,5 @@
 .*
 !.env.example
 !.gitignore
+!fail2ban_examples/
+!nginx_logs_config/

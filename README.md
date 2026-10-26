@@ -154,6 +154,7 @@ The settings are read from `.env` next to the script. You can set another path w
 | `LOCK_FILE` | `/run/fail2ban-nginx-connector.lock` | Lock file for serializing parallel runs |
 | `NGINX_BIN` | `/usr/sbin/nginx` | Full path to nginx. cron's `PATH` usually doesn't include `/usr/sbin`. |
 | `NGINX_RELOAD_REPORT` | `0` | `1` sends a Telegram message on every successful reload |
+| `ACTIONS_REPORT` | `1` | `1` sends a Telegram message on every successful ban/unban. Errors and warnings are always sent. |
 | `SERVER_NAME` | empty | Server name shown in Telegram message titles |
 | `TELEGRAM_TOKEN` | empty | Bot token from [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | empty | Chat/user ID to send messages to |

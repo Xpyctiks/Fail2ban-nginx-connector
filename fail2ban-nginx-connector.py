@@ -43,11 +43,14 @@ try:
   TELEGRAM_CHAT_ID = _env.get("TELEGRAM_CHAT_ID","")
   SERVER_NAME = _env.get("SERVER_NAME","")
   NGINX_RELOAD_REPORT = int(_env.get("NGINX_RELOAD_REPORT","0"))
+  ACTIONS_REPORT = int(_env.get("ACTIONS_REPORT","1"))
   NGINX_BIN = _env.get("NGINX_BIN","/usr/sbin/nginx")
   if not BAN_FILE:
-    sys.exit(f"Variable BAN_FILE is not set!")
+    sys.exit(f"Variable BAN_FILE is not set in .env file!")
 except KeyError as e:
   sys.exit(f"Missing variable {e} in {ENV_FILE}")
+except ValueError as e:
+  sys.exit(f"Invalid value in {ENV_FILE}: {e}")
 
 def log(message):
   timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -96,7 +99,8 @@ def ban(ip, name):
   with lock():
     lines = read_ban_lines()
     if any(line_ip(line) == ip for line in lines):
-      telegram(f"{name} Ban of IP {ip} - this IP already exists!", "🏮Fail2ban-Nginx")
+      if ACTIONS_REPORT == 1:
+        telegram(f"{name} Ban of IP {ip} - this IP already exists!", "🏮Fail2ban-Nginx")
       log(f"{name} Ban of IP {ip} - this IP already exists!")
       return
     with open(BAN_FILE, "a", encoding="utf-8") as f:
@@ -105,21 +109,24 @@ def ban(ip, name):
       f.write(f"{ip} 1;\n")
     create_reload_marker()
   log(f"{name} Added {ip} to {BAN_FILE}, reload scheduled")
-  telegram(f"{name} Banned IP {ip}", "👮Fail2ban-Nginx")
+  if ACTIONS_REPORT == 1:
+    telegram(f"{name} Banned IP {ip}", "👮Fail2ban-Nginx")
 
 def unban(ip, name):
   with lock():
     lines = read_ban_lines()
     remaining = [line for line in lines if line_ip(line) != ip]
     if len(remaining) == len(lines):
-      telegram(f"{name} Unban of IP {ip} - this IP not exists in the ban config!", "🏮Fail2ban-Nginx")
+      if ACTIONS_REPORT == 1:
+        telegram(f"{name} Unban of IP {ip} - this IP not exists in the ban config!", "🏮Fail2ban-Nginx")
       log(f"{name} Unban of IP {ip} - this IP not exists in the ban config!")
       return
     with open(BAN_FILE, "w", encoding="utf-8") as f:
       f.writelines(remaining)
     create_reload_marker()
   log(f"{name} Removed {ip} from {BAN_FILE}, reload scheduled")
-  telegram(f"{name} IP {ip} was unbanned", "🏃Fail2ban-Nginx")
+  if ACTIONS_REPORT == 1:
+    telegram(f"{name} IP {ip} was unbanned", "🏃Fail2ban-Nginx")
 
 def run_nginx(args):
   try:
@@ -160,6 +167,7 @@ def show_current_config():
   print(f"SERVER_NAME = {SERVER_NAME}")
   print(f"NGINX_RELOAD_REPORT = {NGINX_RELOAD_REPORT}")
   print(f"NGINX_BIN = {NGINX_BIN}")
+  print(f"ACTIONS_REPORT = {ACTIONS_REPORT}")
 
 def main():
   parser = argparse.ArgumentParser(description="Fail2ban -> nginx ban list connector")
