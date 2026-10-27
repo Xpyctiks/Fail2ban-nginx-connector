@@ -2,14 +2,16 @@
 
 import argparse
 import fcntl
+import html
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 ENV_FILE = os.environ.get("FAIL2BAN_CONNECTOR_ENV", os.path.join(SCRIPT_DIR, ".env"))
@@ -45,6 +47,8 @@ try:
   NGINX_RELOAD_REPORT = int(_env.get("NGINX_RELOAD_REPORT","0"))
   ACTIONS_REPORT = int(_env.get("ACTIONS_REPORT","1"))
   NGINX_BIN = _env.get("NGINX_BIN","/usr/sbin/nginx")
+  FAIL2BAN_CLIENT = _env.get("FAIL2BAN_CLIENT","/usr/bin/fail2ban-client")
+  STATS_JAILS = [jail.strip() for jail in _env.get("STATS_JAILS","").split(",") if jail.strip()]
   if not BAN_FILE:
     sys.exit(f"Variable BAN_FILE is not set in .env file!")
 except KeyError as e:
@@ -57,11 +61,16 @@ def log(message):
   with open(LOG_FILE, "a", encoding="utf-8") as f:
     f.write(f"{timestamp} {message}\n")
 
-def telegram(message, title):
+def telegram(message, title, parse_html=False):
+  """Send a message. With parse_html=True the message must be valid Telegram HTML."""
   if not TELEGRAM_CHAT_ID or not TELEGRAM_TOKEN:
     return
   url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-  payload = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": f"{title} ({SERVER_NAME})\n{message}"}).encode()
+  data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"{title} ({SERVER_NAME})\n{message}"}
+  if parse_html:
+    data["text"] = f"<b>{html.escape(title)} ({html.escape(SERVER_NAME)})</b>\n{message}"
+    data["parse_mode"] = "HTML"
+  payload = json.dumps(data).encode()
   request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
   try:
     with urllib.request.urlopen(request, timeout=10):
@@ -157,6 +166,169 @@ def reload_nginx():
     telegram("Nginx reloaded", "♻Fail2ban-Nginx")
   return 0
 
+LOG_LINE_RE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) (.*)$")
+ACTION_RE = re.compile(r"^(\S+) (Added|Removed) \S+ (?:to|from) ")
+REPEAT_RE = re.compile(r"^(\S+) Ban of IP \S+ - this IP already exists!")
+
+def collect_stats(hours):
+  """Count bans/unbans per jail, reloads and errors from the log for the last `hours` hours."""
+  since = datetime.now() - timedelta(hours=hours)
+  jails = {}
+  totals = {"repeat": 0, "reloads": 0, "errors": 0}
+  # Also read the previous rotated log, so a rotation doesn't cut the period in half
+  for path in (LOG_FILE + ".1", LOG_FILE):
+    try:
+      f = open(path, encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+      continue
+    with f:
+      for line in f:
+        m = LOG_LINE_RE.match(line.rstrip("\n"))
+        if not m:
+          continue
+        try:
+          timestamp = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+          continue
+        if timestamp < since:
+          continue
+        message = m.group(2)
+        action = ACTION_RE.match(message)
+        if action:
+          if STATS_JAILS and action.group(1) not in STATS_JAILS:
+            continue
+          counts = jails.setdefault(action.group(1), {"bans": 0, "unbans": 0})
+          counts["bans" if action.group(2) == "Added" else "unbans"] += 1
+        elif REPEAT_RE.match(message):
+          totals["repeat"] += 1
+        elif message == "Nginx reloaded":
+          totals["reloads"] += 1
+        elif message.startswith("ERROR:"):
+          totals["errors"] += 1
+  return {
+    "since": since,
+    "until": datetime.now(),
+    "jails": jails,
+    "fail2ban": fail2ban_status(),
+    "banned_now": sum(1 for line in read_ban_lines() if line_ip(line)),
+    **totals,
+  }
+
+def run_fail2ban(args):
+  """Return fail2ban-client stdout, or None if it failed (not root, fail2ban stopped, ...)."""
+  try:
+    result = subprocess.run([FAIL2BAN_CLIENT, *args], capture_output=True, text=True, timeout=15)
+  except (subprocess.TimeoutExpired, OSError):
+    return None
+  return result.stdout if result.returncode == 0 else None
+
+def fail2ban_status():
+  """Return {jail: {"banned": n, "failed": n}} with current values, or None if fail2ban is unavailable."""
+  output = run_fail2ban(["status"])
+  if output is None:
+    return None
+  m = re.search(r"Jail list:\s*(.*)", output)
+  jails = [jail.strip() for jail in m.group(1).split(",") if jail.strip()] if m else []
+  if STATS_JAILS:
+    jails = [jail for jail in jails if jail in STATS_JAILS]
+  result = {}
+  for jail in jails:
+    output = run_fail2ban(["status", jail])
+    if output is None:
+      continue
+    values = {}
+    for key, label in (("banned", "Currently banned"), ("failed", "Currently failed")):
+      m = re.search(rf"{label}:\s*(\d+)", output)
+      values[key] = int(m.group(1)) if m else 0
+    result[jail] = values
+  return result
+
+STATS_NAME_WIDTH = 18
+
+def stats_table(stats):
+  """Plain-text table: bans/unbans for the period from the log + current banned/failed from fail2ban."""
+  f2b = stats["fail2ban"] or {}
+  names = set(stats["jails"]) | set(f2b)
+  empty = {"bans": 0, "unbans": 0}
+
+  def now(name, key):
+    return f2b[name][key] if name in f2b else "-"
+
+  rows = sorted(names, key=lambda name: (-stats["jails"].get(name, empty)["bans"],
+                                         -f2b.get(name, {}).get("banned", 0), name))
+  width = min(STATS_NAME_WIDTH, max([len("Total")] + [len(name) for name in names]))
+  lines = [f"{'':<{width}} {'-period-':>8} {'---now---':>10}",
+           f"{'Jail':<{width}} {'Ban':>4} {'Unb':>3} {'Ban':>5} {'Fail':>4}"]
+  for name in rows:
+    counts = stats["jails"].get(name, empty)
+    short = name if len(name) <= width else name[:width - 1] + "~"
+    lines.append(f"{short:<{width}} {counts['bans']:>4} {counts['unbans']:>3} "
+                 f"{now(name, 'banned'):>5} {now(name, 'failed'):>4}")
+  lines.append("-" * (width + 20))
+  total_bans = sum(c["bans"] for c in stats["jails"].values())
+  total_unbans = sum(c["unbans"] for c in stats["jails"].values())
+  total_banned = sum(v["banned"] for v in f2b.values()) if stats["fail2ban"] is not None else "-"
+  total_failed = sum(v["failed"] for v in f2b.values()) if stats["fail2ban"] is not None else "-"
+  lines.append(f"{'Total':<{width}} {total_bans:>4} {total_unbans:>3} {total_banned:>5} {total_failed:>4}")
+  return "\n".join(lines)
+
+def stats_warnings(stats):
+  """Problems worth showing next to the numbers."""
+  warnings = []
+  if stats["fail2ban"] is None:
+    warnings.append(f"fail2ban-client is unavailable ({FAIL2BAN_CLIENT}), current values are not shown")
+  else:
+    # One IP banned by two jails is a single line in BAN_FILE, so fewer lines than bans is normal.
+    # More lines than fail2ban bans means entries fail2ban no longer knows about.
+    f2b_banned = sum(v["banned"] for v in stats["fail2ban"].values())
+    if stats["banned_now"] > f2b_banned:
+      warnings.append(f"BAN_FILE has {stats['banned_now']} IPs, but fail2ban has only {f2b_banned} banned - "
+                      f"{stats['banned_now'] - f2b_banned} entries may be orphaned")
+  return warnings
+
+def stats_period(stats):
+  return f"{stats['since']:%d.%m %H:%M} - {stats['until']:%d.%m %H:%M}"
+
+def print_stats(hours):
+  stats = collect_stats(hours)
+  print(f"Fail2ban-Nginx stats: period = last {hours}h ({stats_period(stats)}), now = current fail2ban state")
+  print()
+  if stats["jails"] or stats["fail2ban"]:
+    print(stats_table(stats))
+  else:
+    print("No bans or unbans in this period")
+  print()
+  print(f"In BAN_FILE now:    {stats['banned_now']}")
+  print(f"Repeat bans:        {stats['repeat']}")
+  print(f"Nginx reloads:      {stats['reloads']}")
+  print(f"Errors:             {stats['errors']}")
+  for warning in stats_warnings(stats):
+    print(f"WARNING: {warning}")
+  return 0
+
+def send_stats(hours):
+  if not TELEGRAM_CHAT_ID or not TELEGRAM_TOKEN:
+    print("Telegram is not configured: set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID in .env")
+    return 1
+  stats = collect_stats(hours)
+  if stats["jails"] or stats["fail2ban"]:
+    table = f"<pre>{html.escape(stats_table(stats))}</pre>"
+  else:
+    table = "<i>No bans or unbans in this period</i>"
+  message = (
+    f"🗓 Period: last {hours}h, {stats_period(stats)}\n"
+    f"⏱ Now: current fail2ban state\n\n"
+    f"{table}\n\n"
+    f"🚫 In ban list now: <b>{stats['banned_now']}</b>\n"
+    f"🔁 Repeat bans: <b>{stats['repeat']}</b>\n"
+    f"♻ Nginx reloads: <b>{stats['reloads']}</b>\n"
+    f"{'🚨' if stats['errors'] else '✅'} Errors: <b>{stats['errors']}</b>"
+  )
+  for warning in stats_warnings(stats):
+    message += f"\n⚠️ {html.escape(warning)}"
+  telegram(message, "📊Fail2ban-Nginx stats", parse_html=True)
+  return 0
+
 def show_current_config():
   print(f"BAN_FILE = {BAN_FILE}")
   print(f"LOG_FILE = {LOG_FILE}")
@@ -168,6 +340,8 @@ def show_current_config():
   print(f"NGINX_RELOAD_REPORT = {NGINX_RELOAD_REPORT}")
   print(f"NGINX_BIN = {NGINX_BIN}")
   print(f"ACTIONS_REPORT = {ACTIONS_REPORT}")
+  print(f"FAIL2BAN_CLIENT = {FAIL2BAN_CLIENT}")
+  print(f"STATS_JAILS = {', '.join(STATS_JAILS) or '(all jails)'}")
 
 def main():
   parser = argparse.ArgumentParser(description="Fail2ban -> nginx ban list connector")
@@ -178,6 +352,10 @@ def main():
     p.add_argument("name", nargs="?", default="unknown")
   sub.add_parser("reload", help="reload nginx if a reload marker exists")
   sub.add_parser("show", help="shows current config variables")
+  for action, help_text in (("stats", "print ban statistics per jail"),
+                            ("stats-report", "send ban statistics per jail to Telegram")):
+    p = sub.add_parser(action, help=help_text)
+    p.add_argument("--hours", type=int, default=24, help="period in hours (default: 24)")
   args = parser.parse_args()
   if args.action == "ban":
     ban(args.ip, args.name or "unknown")
@@ -187,6 +365,10 @@ def main():
     return reload_nginx()
   elif args.action == "show":
     return show_current_config()
+  elif args.action == "stats":
+    return print_stats(args.hours)
+  elif args.action == "stats-report":
+    return send_stats(args.hours)
   return 0
 
 if __name__ == "__main__":
